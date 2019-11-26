@@ -229,7 +229,7 @@ class TqBacktest(object):
         except StopAsyncIteration:
             del self.serials[serial]
             if not self.serials:
-                raise BacktestFinished() from None
+                raise BacktestFinished(self.api) from None
 
     async def _gen_serial(self, ins, dur):
         """k线/tick 序列的 async generator, yield 出来的行情数据带有时间戳, 因此 _send_diff 可以据此归并"""
