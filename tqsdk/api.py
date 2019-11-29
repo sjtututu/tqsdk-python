@@ -53,7 +53,7 @@ class TqApi(object):
     DEFAULT_INS_URL = "https://openmd.shinnytech.com/t/md/symbols/latest.json"
 
     def __init__(self, account=None, url=None, backtest=None, debug=None, loop=None, _ins_url=None, _md_url=None,
-                 _td_url=None):
+                 _td_url=None, _http_server_port=None):
         """
         创建天勤接口实例
 
@@ -105,7 +105,7 @@ class TqApi(object):
         self._ins_url = TqApi.DEFAULT_INS_URL
         self._md_url = "wss://openmd.shinnytech.com/t/md/front/mobile"
         self._td_url = "wss://opentd.shinnytech.com/trade/user0"
-        self._http_server_port = None
+        self._http_server_port = _http_server_port
         if url and isinstance(self._account, TqSim):
             self._md_url = url
         if url and isinstance(self._account, TqAccount):
