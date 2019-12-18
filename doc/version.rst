@@ -2,6 +2,27 @@
 
 版本变更
 =============================
+1.3.1(2019/12/18)
+
+* 支持通过 :py:class:`tqsdk.api.TqApi` 内 **设置 web_gui=True 参数以实现实盘/回测的图像化支持** , (详见: :ref:`web_gui` )
+* 增加支持 Python3.8
+* 完善 TqSdk 各公开函数的参数类型标注及函数返回值类型标注
+* 将 api 中除业务数据以外的所有变量私有化
+* 完善测试用例
+* 完善文档内容
+
+
+1.2.1(2019/12/04)
+
+* 完善 insert_order() 函数返回的 order 的初始化字段：增加 limit_price、price_type、volume_condition、time_condition 字段
+* 增加 quote 行情数据中的 trading_time、expire_datetime、delivery_month、delivery_year、ins_class 字段
+* 删除 quote 行情数据中的 change、change_percent 字段
+* 修复重复发送K线订阅指令给服务器的bug
+* 修复未订阅行情时回测不能立即结束的bug
+* 完善测试用例
+* 完善文档内容
+
+
 1.2.0(2019/11/21)
 
 * 支持同时获取对齐的多合约 K 线 (详见 :py:meth:`~tqsdk.api.TqApi.get_kline_serial` )
@@ -14,7 +35,7 @@
 
 1.1.0(2019/10/15)
 
-* 增加时间类型转换的功能函数
+* 增加时间类型转换的功能函数 (详见 :py:meth:`~tqsdk.tafunc` )
 * 修复与天勤连接时的一些bug
 * 完善测试用例及测试环境配置
 * 修改回测log内容,去除回测时log中的当前本地时间

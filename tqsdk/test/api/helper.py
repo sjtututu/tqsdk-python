@@ -62,7 +62,7 @@ class MockInsServer():
         app.add_routes([web.get('/{tail:.*}', self.handle)])
         runner = web.AppRunner(app)
         await runner.setup()
-        site = web.TCPSite(runner, 'localhost', self.port)
+        site = web.TCPSite(runner, '127.0.0.1', self.port)
         await site.start()
         await self.stop_signal
         await runner.cleanup()
@@ -93,7 +93,8 @@ class MockServer():
         try:
             while True:
                 s = await self.connections["md"].recv()
-                await self.on_received("md", json.loads(s))
+                pack = json.loads(s)
+                await self.on_received("md", pack)
         except websockets.exceptions.ConnectionClosedOK as e:
             assert e.code == 1000
 
@@ -101,7 +102,10 @@ class MockServer():
         await self.on_connected("td", connection)
         while True:
             s = await self.connections["td"].recv()
-            await self.on_received("td", json.loads(s))
+            pack = json.loads(s)
+            if pack["aid"] == "peek_message":
+                continue
+            await self.on_received("td", pack)
 
     def run(self, script_file_name):
         self.script_file_name = script_file_name
@@ -109,12 +113,12 @@ class MockServer():
         self.thread.start()
 
     async def _server(self):
-        async with websockets.serve(self._handler_md, "localhost", self.md_port) as self.server_md:
-            async with websockets.serve(self._handler_td, "localhost", self.td_port) as self.server_td:
+        async with websockets.serve(self._handler_md, "127.0.0.1", self.md_port) as self.server_md:
+            async with websockets.serve(self._handler_td, "127.0.0.1", self.td_port) as self.server_td:
                 await self.stop_signal
 
     def _run(self):
-        self.script_file = open(self.script_file_name, "rt", encoding="gbk")
+        self.script_file = open(self.script_file_name, "rt", encoding="utf-8")
         asyncio.set_event_loop(self.loop)
         self.loop.run_until_complete(self._server())
 
@@ -124,7 +128,7 @@ class MockServer():
         for line in self.script_file:
             # 2019-09-09 16:22:40,652 - DEBUG - websocket message sent to wss://openmd.shinnytech.com/t/md/front/mobile: {"aid": "subscribe_quote",
             item = {}
-            if "websocket message sent" in line:
+            if "websocket message sent" in line and "peek_message" not in line:
                 item["type"] = "sent"
             elif "websocket message received" in line:
                 item["type"] = "received"
@@ -156,6 +160,7 @@ class MockServer():
     async def on_received(self, source, pack):
         if not self._expecting:
             await self._process_script()
-        assert self._expecting["source"] == source
-        assert self._expecting["content"] == pack
-        await self._process_script()
+        if pack["aid"] != "peek_message":
+            assert self._expecting["source"] == source
+            assert self._expecting["content"] == pack
+            await self._process_script()

@@ -1,10 +1,12 @@
 #!/usr/bin/env python
 #  -*- coding: utf-8 -*-
+import json
 import os
 import random
 import unittest
+from datetime import datetime
 from tqsdk.test.api.helper import MockInsServer, MockServer
-from tqsdk import TqApi
+from tqsdk import TqApi, TqBacktest
 
 
 class TestMdBasic(unittest.TestCase):
@@ -18,7 +20,7 @@ class TestMdBasic(unittest.TestCase):
     """
 
     def setUp(self):
-        self.ins = MockInsServer(5000)
+        # self.ins = MockInsServer(5000)
         self.mock = MockServer()
         # self.tq = WebsocketServer(5300)
         self.ins_url = "https://openmd.shinnytech.com/t/md/symbols/2019-07-03.json"
@@ -26,7 +28,7 @@ class TestMdBasic(unittest.TestCase):
         self.td_url = "ws://127.0.0.1:5200/"
 
     def tearDown(self):
-        self.ins.close()
+        # self.ins.close()
         self.mock.close()
 
     # 获取行情测试
@@ -72,9 +74,8 @@ class TestMdBasic(unittest.TestCase):
         self.assertEqual(q.min_market_order_volume, 0)
         self.assertEqual(q.underlying_symbol, "")
         self.assertTrue(q.strike_price != q.strike_price)  # 判定nan
-        self.assertTrue(q.change != q.change)
-        self.assertTrue(q.change_percent != q.change_percent)
         self.assertEqual(q.expired, False)
+        self.assertEqual(q.ins_class, "FUTURE")
         self.assertEqual(q.margin, 16233.000000000002)
         self.assertEqual(q.commission, 11.594999999999999)
         self.assertEqual(repr(q.trading_time.day),
@@ -91,7 +92,7 @@ class TestMdBasic(unittest.TestCase):
         self.assertEqual(q.ask_volume3, 5)
         self.assertEqual(q.ask_price4, 49250.0)
         self.assertEqual(q.ask_volume4, 50)
-        self.assertEqual(q.ask_price5, "-")
+        self.assertEqual(q.ask_price5 != q.ask_price5, True)  # 判断nan
         self.assertEqual(q.ask_volume5, 0)
         self.assertEqual(q.bid_price2, 46560.0)
         self.assertEqual(q.bid_volume2, 100)
@@ -99,7 +100,7 @@ class TestMdBasic(unittest.TestCase):
         self.assertEqual(q.bid_volume3, 270)
         self.assertEqual(q.bid_price4, 44920.0)
         self.assertEqual(q.bid_volume4, 5)
-        self.assertEqual(q.bid_price5, "-")
+        self.assertEqual(q.bid_price5 != q.bid_price5, True)
         self.assertEqual(q.bid_volume5, 0)
 
         # 其他取值方式

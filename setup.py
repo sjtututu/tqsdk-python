@@ -36,7 +36,7 @@ with open("README.md", mode="r", encoding='utf-8') as fh:
 
 setuptools.setup(
     name='tqsdk',
-    version="1.2.0",
+    version="1.3.1",
     description='TianQin SDK',
     author='TianQin',
     author_email='tianqincn@gmail.com',
@@ -46,12 +46,12 @@ setuptools.setup(
     packages=setuptools.find_packages(exclude=["tqsdk.test", "tqsdk.tq", "tqsdk.tq.*", "tqsdk.demo.tq", "tqsdk.demo.tq.*"]),
     zip_safe=False,
     python_requires='>=3.6',
-    # install_requires=["websockets>=6.0", "requests", "numpy", "pandas>=0.24.0", "numba"],
-    install_requires=["websockets>=6.0", "requests", "numpy", "pandas>=0.24.0"],
+    install_requires=["websockets>=8.1", "requests", "numpy", "pandas>=0.24.0", "simplejson", "aiohttp"],
     cmdclass={'bdist_wheel': bdist_wheel},
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: Apache Software License",
         "Operating System :: OS Independent",
     ],
+    include_package_data=True
 )

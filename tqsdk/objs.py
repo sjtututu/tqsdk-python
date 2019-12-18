@@ -53,6 +53,38 @@ class Quote(Entity):
         self.bid_price1 = float("nan")
         #: 买一量
         self.bid_volume1 = 0
+        #: 卖二价
+        self.ask_price2 = float("nan")
+        #: 卖二量
+        self.ask_volume2 = 0
+        #: 买二价
+        self.bid_price2 = float("nan")
+        #: 买二量
+        self.bid_volume2 = 0
+        #: 卖三价
+        self.ask_price3 = float("nan")
+        #: 卖三量
+        self.ask_volume3 = 0
+        #: 买三价
+        self.bid_price3 = float("nan")
+        #: 买三量
+        self.bid_volume3 = 0
+        #: 卖四价
+        self.ask_price4 = float("nan")
+        #: 卖四量
+        self.ask_volume4 = 0
+        #: 买四价
+        self.bid_price4 = float("nan")
+        #: 买四量
+        self.bid_volume4 = 0
+        #: 卖五价
+        self.ask_price5 = float("nan")
+        #: 卖五量
+        self.ask_volume5 = 0
+        #: 买五价
+        self.bid_price5 = float("nan")
+        #: 买五量
+        self.bid_volume5 = 0
         #: 最新价
         self.last_price = float("nan")
         #: 当日最高价
@@ -101,10 +133,10 @@ class Quote(Entity):
         self.underlying_symbol = ""
         #: 行权价
         self.strike_price = float("nan")
-        #: 涨跌
-        self.change = float("nan")
-        #: 涨跌幅
-        self.change_percent = float("nan")
+        #: 合约类型
+        self.ins_class = ""
+        #: 交易所内的合约代码
+        self.instrument_id = ""
         #: 合约是否已下市
         self.expired = False
         #: 交易时间段
@@ -173,14 +205,46 @@ class Tick(Entity):
         self.highest = float("nan")
         #: 当日最低价
         self.lowest = float("nan")
-        #: 卖一价
+        #: 卖1价
         self.ask_price1 = float("nan")
-        #: 卖一量
+        #: 卖1量
         self.ask_volume1 = 0
-        #: 买一价
+        #: 买1价
         self.bid_price1 = float("nan")
-        #:买一量
+        #: 买1量
         self.bid_volume1 = 0
+        #: 卖2价
+        self.ask_price2 = float("nan")
+        #: 卖2量
+        self.ask_volume2 = 0
+        #: 买2价
+        self.bid_price2 = float("nan")
+        #: 买2量
+        self.bid_volume2 = 0
+        #: 卖3价
+        self.ask_price3 = float("nan")
+        #: 卖3量
+        self.ask_volume3 = 0
+        #: 买3价
+        self.bid_price3 = float("nan")
+        #: 买3量
+        self.bid_volume3 = 0
+        #: 卖4价
+        self.ask_price4 = float("nan")
+        #: 卖4量
+        self.ask_volume4 = 0
+        #: 买4价
+        self.bid_price4 = float("nan")
+        #: 买4量
+        self.bid_volume4 = 0
+        #: 卖5价
+        self.ask_price5 = float("nan")
+        #: 卖5量
+        self.ask_volume5 = 0
+        #: 买5价
+        self.bid_price5 = float("nan")
+        #: 买5量
+        self.bid_volume5 = 0
         #: 当日成交量
         self.volume = 0
         #: 成交额
@@ -346,7 +410,7 @@ class Position(Entity):
 
         :return: dict, 其中每个元素的key为委托单ID, value为 :py:class:`~tqsdk.objs.Order`
         """
-        tdict = self._api._get_obj(self._api._data, ["trade", self._api._account.account_id, "orders"])
+        tdict = self._api._get_obj(self._api._data, ["trade", self._api._account._account_id, "orders"])
         fts = {order_id: order for order_id, order in tdict.items() if (not order_id.startswith(
             "_")) and order.instrument_id == self.instrument_id and order.exchange_id == self.exchange_id and order.status == "ALIVE"}
         return fts
@@ -429,7 +493,7 @@ class Order(Entity):
 
         :return: 当委托单部分成交或全部成交时, 返回成交部分的平均成交价. 无任何成交时, 返回 nan
         """
-        tdict = self._api._get_obj(self._api._data, ["trade", self._api._account.account_id, "trades"])
+        tdict = self._api._get_obj(self._api._data, ["trade", self._api._account._account_id, "trades"])
         sum_volume = sum([trade.volume for trade_id, trade in tdict.items() if
                           (not trade_id.startswith("_")) and trade.order_id == self.order_id])
         if sum_volume == 0:
@@ -445,7 +509,7 @@ class Order(Entity):
 
         :return: dict, 其中每个元素的key为成交ID, value为 :py:class:`~tqsdk.objs.Trade`
         """
-        tdict = self._api._get_obj(self._api._data, ["trade", self._api._account.account_id, "trades"])
+        tdict = self._api._get_obj(self._api._data, ["trade", self._api._account._account_id, "trades"])
         fts = {trade_id: trade for trade_id, trade in tdict.items() if
                (not trade_id.startswith("_")) and trade.order_id == self.order_id}
         return fts

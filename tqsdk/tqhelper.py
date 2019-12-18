@@ -230,12 +230,10 @@ class Forwarding(object):
             elif pack["aid"] == "insert_order":
                 self.order_symbols.add(pack["exchange_id"] + "." + pack["instrument_id"])
                 await self._send_subscribed_to_tq()
-                await upstream_send_chan.send(pack)
             elif pack["aid"] == "set_chart" or pack["aid"] == "subscribe_quote":
                 await self._send_subscribed_to_tq()
-                await upstream_send_chan.send(pack)
-            else:
-                await upstream_send_chan.send(pack)
+            # 所有数据都需要向上游（新版tqwebhelper）转发，由上游判断是否继续转发
+            await upstream_send_chan.send(pack)
 
     async def _send_subscribed_to_tq(self):
         d = []
