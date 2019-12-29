@@ -17,6 +17,7 @@ __author__ = 'chengzhi'
 
 import re
 import json
+import ssl
 import uuid
 import sys
 import time
@@ -25,20 +26,22 @@ import copy
 import ctypes
 import asyncio
 import functools
+import certifi
 import websockets
 import requests
 import random
 import base64
 import os
+from datetime import datetime
 from typing import Union, List, Any, Optional
 import pandas as pd
 import numpy as np
 from .__version__ import __version__
 from tqsdk.sim import TqSim
 from tqsdk.objs import Entity, Quote, Kline, Tick, Account, Position, Order, Trade
-from tqsdk.backtest import TqBacktest
-from tqsdk import tqhelper
+from tqsdk.backtest import TqBacktest, TqReplay
 from tqsdk.tqwebhelper import TqWebHelper
+
 
 class TqApi(object):
     """
@@ -51,22 +54,22 @@ class TqApi(object):
 
     RD = random.Random()  # 初始化随机数引擎
     DEFAULT_INS_URL = "https://openmd.shinnytech.com/t/md/symbols/latest.json"
+    DEFAULT_MD_URL = "wss://openmd.shinnytech.com/t/md/front/mobile"
+    DEFAULT_TD_URL = "wss://opentd.shinnytech.com/trade/user0"
 
-    def __init__(self, account: Union['TqAccount', TqSim, 'TqApi', None] = None, url: Optional[str] = None,
-                 backtest: Optional[TqBacktest] = None, web_gui: bool = False, debug: Optional[str] = None,
+    def __init__(self, account: Union['TqAccount', TqSim, None] = None, url: Optional[str] = None,
+                 backtest: Union[TqBacktest, TqReplay, None] = None, web_gui: bool = False, debug: Optional[str] = None,
                  loop: Optional[asyncio.AbstractEventLoop] = None, _ins_url=None, _md_url=None, _td_url=None) -> None:
         """
         创建天勤接口实例
 
         Args:
-            account (None/TqAccount/TqSim/TqApi): [可选]交易账号:
+            account (None/TqAccount/TqSim): [可选]交易账号:
                 * None: 账号将根据命令行参数决定, 默认为 :py:class:`~tqsdk.sim.TqSim`
 
                 * :py:class:`~tqsdk.api.TqAccount` : 使用实盘账号, 直连行情和交易服务器(不通过天勤终端), 需提供期货公司/帐号/密码
 
                 * :py:class:`~tqsdk.sim.TqSim` : 使用 TqApi 自带的内部模拟账号
-
-                * :py:class:`~tqsdk.sim.TqApi` : 对 master TqApi 创建一个 slave 副本, 以便在其它线程中使用
 
             url (str): [可选]指定服务器的地址
                 * 当 account 为 :py:class:`~tqsdk.api.TqAccount` 类型时, 可以通过该参数指定交易服务器地址, \
@@ -75,9 +78,14 @@ class TqApi(object):
                 * 当 account 为 :py:class:`~tqsdk.sim.TqSim` 类型时, 可以通过该参数指定行情服务器地址,\
                 默认使用 wss://openmd.shinnytech.com/t/md/front/mobile
 
-            backtest (TqBacktest): [可选]传入 TqBacktest 对象将进入回测模式, \
-            回测模式下会强制使用 account 为 :py:class:`~tqsdk.sim.TqSim` 并只连接\
-             wss://openmd.shinnytech.com/t/md/front/mobile 接收行情数据
+            backtest (TqBacktest/TqReplay): [可选] 进入时光机，此时强制要求 account 类型为 :py:class:`~tqsdk.sim.TqSim`
+
+                * :py:class:`~tqsdk.backtest.TqBacktest` : 传入 TqBacktest 对象，进入回测模式 \
+                在回测模式下, TqBacktest 连接 wss://openmd.shinnytech.com/t/md/front/mobile 接收行情数据, \
+                由 TqBacktest 内部完成回测时间段内的行情推进和 K 线、Tick 更新.
+
+                * :py:class:`~tqsdk.backtest.TqReplay` : 传入 TqReplay 对象, 进入复盘模式 \
+                在复盘模式下, TqReplay 会在服务器申请复盘日期的行情资源, 由服务器推送复盘日期的行情.
 
             debug(str): [可选] 指定一个日志文件名, 将调试信息输出到指定文件. 默认不输出.
 
@@ -103,10 +111,17 @@ class TqApi(object):
 
             # 进行策略回测
             from datetime import date
-            from tqsdk import TqApi, TqSim, TqBacktest
-            api = TqApi(TqSim(), backtest=TqBacktest(start_dt=date(2018, 5, 1), end_dt=date(2018, 10, 1)))
+            from tqsdk import TqApi, TqBacktest
+            api = TqApi(backtest=TqBacktest(start_dt=date(2018, 5, 1), end_dt=date(2018, 10, 1)))
 
         Example4::
+
+            # 进行策略复盘
+            from datetime import date
+            from tqsdk import TqApi, TqReplay
+            api = TqApi(backtest=TqReplay(replay_dt=date(2019, 12, 16)))
+
+        Example5::
 
             # 开启 web_gui 功能
             from tqsdk import TqApi
@@ -115,13 +130,11 @@ class TqApi(object):
         """
 
         # 记录参数
-        if account is None:
-            account = TqSim()
-        self._account = account
+        self._account = TqSim() if account is None else account
         self._backtest = backtest
         self._ins_url = TqApi.DEFAULT_INS_URL
-        self._md_url = "wss://openmd.shinnytech.com/t/md/front/mobile"
-        self._td_url = "wss://opentd.shinnytech.com/trade/user0"
+        self._md_url = TqApi.DEFAULT_MD_URL
+        self._td_url = TqApi.DEFAULT_TD_URL
 
         if url and isinstance(self._account, TqSim):
             self._md_url = url
@@ -177,7 +190,6 @@ class TqApi(object):
         self._pending_diffs = []  # 从网络上收到的待处理的 diffs, 只在 wait_update 函数执行过程中才可能为非空
         self._prototype = self._gen_prototype()  # 各业务数据的原型, 用于决定默认值及将收到的数据转为特定的类型
         self._wait_timeout = False  # wait_update 是否触发超时
-        self._to_tq = False  # flag: 是否连接了天勤
 
         # slave模式的api不需要完整初始化流程
         self._is_slave = isinstance(account, TqApi)
@@ -188,7 +200,6 @@ class TqApi(object):
                 raise Exception("不可以为slave再创建slave")
             self._master._slaves.append(self)
             self._account = self._master._account
-            self._to_tq = self._master._to_tq
             self._web_gui = False # 如果是slave, _web_gui 一定是 False
             return  # 注: 如果是slave,则初始化到这里结束并返回,以下代码不执行
 
@@ -347,15 +358,15 @@ class TqApi(object):
         Returns:
             pandas.DataFrame: 本函数总是返回一个 pandas.DataFrame 实例. 行数=data_length, 包含以下列:
 
-            * id: int, 1234 (k线序列号)
-            * datetime: int, 1501080715000000000 (K线起点时间(按北京时间)，自unix epoch(1970-01-01 00:00:00 GMT)以来的纳秒数)
-            * open: float, 51450.0 (K线起始时刻的最新价)
-            * high: float, 51450.0 (K线时间范围内的最高价)
-            * low: float, 51450.0 (K线时间范围内的最低价)
-            * close: float, 51450.0 (K线结束时刻的最新价)
-            * volume: int, 11 (K线时间范围内的成交量)
-            * open_oi: int, 27354 (K线起始时刻的持仓量)
-            * close_oi: int, 27355 (K线结束时刻的持仓量)
+            * id: 1234 (k线序列号)
+            * datetime: 1501080715000000000 (K线起点时间(按北京时间)，自unix epoch(1970-01-01 00:00:00 GMT)以来的纳秒数)
+            * open: 51450.0 (K线起始时刻的最新价)
+            * high: 51450.0 (K线时间范围内的最高价)
+            * low: 51450.0 (K线时间范围内的最低价)
+            * close: 51450.0 (K线结束时刻的最新价)
+            * volume: 11 (K线时间范围内的成交量)
+            * open_oi: 27354 (K线起始时刻的持仓量)
+            * close_oi: 27355 (K线结束时刻的持仓量)
 
         Example1::
 
@@ -459,19 +470,19 @@ class TqApi(object):
         Returns:
             pandas.DataFrame: 本函数总是返回一个 pandas.DataFrame 实例. 行数=data_length, 包含以下列:
 
-            * id: int, tick序列号
-            * datetime: int, 1501074872000000000 (tick从交易所发出的时间(按北京时间)，自unix epoch(1970-01-01 00:00:00 GMT)以来的纳秒数)
-            * last_price: float, 3887.0 (最新价)
-            * average: float, 3820.0 (当日均价)
-            * highest: float, 3897.0 (当日最高价)
-            * lowest: float, 3806.0 (当日最低价)
-            * ask_price1: float, 3886.0 (卖一价)
-            * ask_volume1: int, 3 (卖一量)
-            * bid_price1: float, 3881.0 (买一价)
-            * bid_volume1: int, 18 (买一量)
-            * volume: int 7823 (当日成交量)
-            * amount: float, 19237841.0 (成交额)
-            * open_interest: int, 1941 (持仓量)
+            * id: 12345 tick序列号
+            * datetime: 1501074872000000000 (tick从交易所发出的时间(按北京时间)，自unix epoch(1970-01-01 00:00:00 GMT)以来的纳秒数)
+            * last_price: 3887.0 (最新价)
+            * average: 3820.0 (当日均价)
+            * highest: 3897.0 (当日最高价)
+            * lowest: 3806.0 (当日最低价)
+            * ask_price1: 3886.0 (卖一价)
+            * ask_volume1: 3 (卖一量)
+            * bid_price1: 3881.0 (买一价)
+            * bid_volume1: 18 (买一量)
+            * volume: 7823 (当日成交量)
+            * amount: 19237841.0 (成交额)
+            * open_interest: 1941 (持仓量)
 
         Example::
 
@@ -1094,6 +1105,18 @@ class TqApi(object):
         return chan
 
     # ----------------------------------------------------------------------
+    def set_replay_speed(self, speed: float = 10.0) -> None:
+        """
+        调整复盘服务器行情推进速度
+
+        Args:
+            speed (float): 复盘服务器行情推进速度, 默认为 10.0
+
+        """
+        if isinstance(self._backtest, TqReplay):
+            self._backtest._set_server_session({"aid": "ratio", "speed": speed})
+
+    # ----------------------------------------------------------------------
     def _call_soon(self, org_call_soon, callback, *args, **kargs):
         """ioloop.call_soon的补丁, 用来追踪是否有任务完成并等待执行"""
         self._event_rev += 1
@@ -1101,14 +1124,12 @@ class TqApi(object):
 
     def _setup_connection(self):
         """初始化"""
+        tq_web_helper = TqWebHelper(self)
 
-        # 如果处于回测模式则将帐号转为模拟帐号，并直接连接 openmd
-        if self._backtest:
-            if not isinstance(self._account, TqSim):
-                self._account = TqSim()
-
-        # 与天勤配合
-        tq_send_chan, tq_recv_chan = tqhelper.link_tq(self)
+        # 等待复盘服务器启动
+        if isinstance(self._backtest, TqReplay):
+            self._account = self._account if isinstance(self._account, TqSim) else TqSim()
+            self._ins_url, self._md_url = self._backtest._create_server(self)
 
         # 连接合约和行情服务器
         ws_md_send_chan, ws_md_recv_chan = TqChan(self), TqChan(self)
@@ -1120,8 +1141,20 @@ class TqApi(object):
         })  # 获取合约信息
         self.create_task(self._connect(self._md_url, ws_md_send_chan, ws_md_recv_chan))  # 启动行情websocket连接
 
+        # 复盘模式，定时发送心跳包, 并将复盘日期发在行情的 recv_chan
+        if isinstance(self._backtest, TqReplay):
+            ws_md_recv_chan.send_nowait({
+                "aid": "rtn_data",
+                "data": [{
+                    "_tqsdk_replay": {
+                        "replay_dt": int(datetime.combine(self._backtest._replay_dt, datetime.min.time()).timestamp() * 1e9)}
+                }]
+            })
+            self.create_task(self._backtest._run())
+
         # 如果处于回测模式，则将行情连接对接到 backtest 上
-        if self._backtest:
+        if isinstance(self._backtest, TqBacktest):
+            self._account = self._account if isinstance(self._account, TqSim) else TqSim()
             bt_send_chan, bt_recv_chan = TqChan(self), TqChan(self)
             self.create_task(self._backtest._run(self, bt_send_chan, bt_recv_chan, ws_md_send_chan, ws_md_recv_chan))
             ws_md_send_chan, ws_md_recv_chan = bt_send_chan, bt_recv_chan
@@ -1139,17 +1172,8 @@ class TqApi(object):
 
         # 与 web 配合, 在 tq_web_helper 内部中处理 web_gui 选项
         web_send_chan, web_recv_chan = TqChan(self), TqChan(self)
-        self.create_task(TqWebHelper()._run(self, web_send_chan, web_recv_chan, self._send_chan, self._recv_chan))
+        self.create_task(tq_web_helper._run(web_send_chan, web_recv_chan, self._send_chan, self._recv_chan))
         self._send_chan, self._recv_chan = web_send_chan, web_recv_chan
-
-        # 抄送部分数据包到天勤
-        if tq_send_chan and tq_recv_chan:
-            self._to_tq = True
-            upstream_send_chan, upstream_recv_chan = self._send_chan, self._recv_chan  # 连接上游的channel
-            self._send_chan, self._recv_chan = TqChan(self), TqChan(self)  # 连接到下游的channel
-            from tqsdk.tqhelper import Forwarding
-            self.create_task(Forwarding(self, self._send_chan, self._recv_chan, upstream_send_chan, upstream_recv_chan,
-                                        tq_send_chan, tq_recv_chan)._forward())
 
         # 发送第一个peek_message,因为只有当收到上游数据包时wait_update()才会发送peek_message
         self._send_chan.send_nowait({
@@ -1230,13 +1254,13 @@ class TqApi(object):
                 array[0:serial["width"] - shift] = array[shift:serial["width"]]
                 for ext in serial["extra_array"].values():
                     ext[0:serial["width"] - shift] = ext[shift:serial["width"]]
-                    if ext.dtype == np.float:
+                    if np.issubdtype(ext.dtype, np.floating):
                         ext[serial["width"] - shift:] = np.nan
-                    elif ext.dtype == np.object:
+                    elif np.issubdtype(ext.dtype, np.object_):
                         ext[serial["width"] - shift:] = None
-                    elif ext.dtype == np.int:
+                    elif np.issubdtype(ext.dtype, np.integer):
                         ext[serial["width"] - shift:] = 0
-                    elif ext.dtype == np.bool:
+                    elif np.issubdtype(ext.dtype, np.bool_):
                         ext[serial["width"] - shift:] = False
                     else:
                         ext[serial["width"] - shift:] = np.nan
@@ -1385,10 +1409,8 @@ class TqApi(object):
             group = [c for c in cols if c.startswith(col + ".") or c == col]
             cols = [c for c in cols if c not in group]
             data = {c[len(col):]: serial["extra_array"][c][serial["update_row"]:] for c in group}
-            self._process_chart_data(serial, symbol, duration, col, serial["width"] - serial["update_row"],
-                                     int(serial["array"][-1, 1]) + 1, data)
             self._process_chart_data_for_web(serial, symbol, duration, col, serial["width"] - serial["update_row"],
-                                     int(serial["array"][-1, 1]) + 1, data)
+                                             int(serial["array"][-1, 1]) + 1, data)
         serial["update_row"] = serial["width"]
 
     def _process_chart_data(self, serial, symbol, duration, col, count, right, data):
@@ -1531,6 +1553,7 @@ class TqApi(object):
 
     async def _notify_watcher(self):
         """将从服务器收到的通知打印出来"""
+        notify_logger = self._logger.getChild("Notify")
         processed_notify = set()
         notify = self._get_obj(self._data, ["notify"])
         async with self.register_update_notify(notify) as update_chan:
@@ -1543,7 +1566,7 @@ class TqApi(object):
                         level = getattr(logging, notify[n]["level"])
                     except (AttributeError, KeyError):
                         level = logging.INFO
-                    self._logger.log(level, "通知: %s", notify[n]["content"])
+                    notify_logger.log(level, "通知: %s", notify[n]["content"])
 
     async def _connect(self, url, send_chan, recv_chan):
         """启动websocket客户端"""
@@ -1551,11 +1574,19 @@ class TqApi(object):
         pos_symbols = {}  # 断线前持有的所有合约代码
         first_connect = True  # 首次连接标志
         un_processed = False  # 重连后尚未处理完标志
+        keywords = {
+            "max_size": None,
+            "extra_headers": {
+                "User-Agent": "tqsdk-python %s" % __version__
+            }
+        }
+        if url.startswith("wss://"):
+            ssl_context = ssl.create_default_context()
+            ssl_context.load_verify_locations(certifi.where())
+            keywords["ssl"] = ssl_context
         while True:
             try:
-                async with websockets.connect(url, max_size=None, extra_headers={
-                    "User-Agent": "tqsdk-python %s" % __version__
-                }) as client:
+                async with websockets.connect(url, **keywords) as client:
                     # 发送网络连接建立的通知，code = 2019112901
                     notify_id = uuid.UUID(int=TqApi.RD.getrandbits(128)).hex
                     notify = {
@@ -1581,7 +1612,11 @@ class TqApi(object):
                     # 发送网络连接建立的通知，code = 2019112901 or 2019112902，这里区分了第一次连接和重连
                     await recv_chan.send({
                         "aid": "rtn_data",
-                        "data": [{"notify": {notify_id: notify}}]
+                        "data": [{
+                            "notify": {
+                                notify_id: notify
+                            }
+                        }]
                     })
                     send_task = self.create_task(
                         self._send_handler(client, url, resend_request, send_chan, first_connect))
@@ -1701,7 +1736,11 @@ class TqApi(object):
                 }
                 await recv_chan.send({
                     "aid": "rtn_data",
-                    "data": [{"notify": {notify_id: notify}}]
+                    "data": [{
+                        "notify": {
+                            notify_id: notify
+                        }
+                    }]
                 })
             finally:
                 if first_connect:
@@ -1743,7 +1782,7 @@ class TqApi(object):
                 return
             if not self._is_slave:
                 for slave in self._slaves:
-                    slave._slave_recv_pack(pack.copy())
+                    slave._slave_recv_pack(copy.deepcopy(pack))
             self._pending_diffs.extend(pack.get("data", []))
 
     @staticmethod

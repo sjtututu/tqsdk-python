@@ -7,20 +7,49 @@
 @description: 
 """
 import os
+import re
 import sys
 import argparse
 import simplejson
 import asyncio
 from datetime import datetime
 from aiohttp import web
+from urllib.parse import urlparse
 import socket
 import websockets
 import tqsdk
 
 class TqWebHelper(object):
-    async def _run(self, api, api_send_chan, api_recv_chan, web_send_chan, web_recv_chan):
+
+    def __init__(self, api):
+        """初始化，检查参数"""
         self._api = api
         self._logger = self._api._logger.getChild("TqWebHelper")  # 调试信息输出
+        self._http_server_host = "127.0.0.1"
+        self._http_server_port = 0
+        args = TqWebHelper.parser_arguments()
+        if args:
+            if args["_action"] == "run":
+                # 运行模式下，账户参数冲突需要抛错，提示用户
+                if isinstance(self._api._account, tqsdk.api.TqAccount) and \
+                        (self._api._account._account_id != args["_account_id"] or self._api._account._broker_id != args["_broker_id"]):
+                    raise Exception("策略代码与设置中的账户参数冲突。可尝试删去代码中的账户参数 TqAccount，以终端或者插件设置的账户参数运行。")
+                self._api._account = tqsdk.api.TqAccount(args["_broker_id"], args["_account_id"], args["_password"])
+                self._api._backtest = None
+            elif args["_action"] == "backtest":
+                self._api._backtest = tqsdk.api.TqBacktest(start_dt=datetime.strptime(args["_start_dt"], '%Y%m%d'),
+                                            end_dt=datetime.strptime(args["_end_dt"], '%Y%m%d'))
+            elif args["_action"] == "replay":
+                self._api._backtest = tqsdk.api.TqReplay(datetime.strptime(args["_replay_dt"], '%Y%m%d'))
+
+            if args["_http_server_address"]:
+                self._api._web_gui = True  # 命令行 _http_server_address, 一定打开 _web_gui
+                address = urlparse(args["_http_server_address"])
+                host, _, port = address.netloc.partition(":")
+                self._http_server_host = host if host else "127.0.0.1"
+                self._http_server_port = int(port) if port else 0
+
+    async def _run(self, api_send_chan, api_recv_chan, web_send_chan, web_recv_chan):
         if not self._api._web_gui:
             # 没有开启 web_gui 功能
             _data_handler_without_web_task = self._api.create_task(
@@ -33,24 +62,13 @@ class TqWebHelper(object):
             finally:
                 _data_handler_without_web_task.cancel()
         else:
-            # 解析命令行参数
-            parser = argparse.ArgumentParser()
-            # 天勤连接基本参数
-            parser.add_argument('--_http_server_port', type=int, required=False)
-            args, unknown = parser.parse_known_args()
-            # 可选参数，tqwebhelper 中 http server 的 port
-            if args._http_server_port is not None:
-                self._http_server_port = args._http_server_port
-            else:
-                self._http_server_port = 0
-
             self._web_dir = os.path.join(os.path.dirname(__file__), 'web')
             file_path = os.path.abspath(sys.argv[0])
             file_name = os.path.basename(file_path)
             # 初始化数据截面
             self._data = {
                 "action": {
-                    "mode": "run",
+                    "mode": "replay" if isinstance(self._api._backtest, tqsdk.api.TqReplay) else "backtest" if isinstance(self._api._backtest, tqsdk.api.TqBacktest) else "run",
                     "md_url_status": '-',
                     "td_url_status": True if isinstance(self._api._account, tqsdk.api.TqSim) else '-',
                     "account_id": self._api._account._account_id,
@@ -138,14 +156,10 @@ class TqWebHelper(object):
                         orders_changed = d.get("trade", {}).get(self._api._account._account_id, {}).get("orders", {})
                         if static_balance_changed is not None or trades_changed != {} or orders_changed != {}:
                             account_changed = True
-                    # 处理 backtest
-                    tqsdk_backtest = d.get("_tqsdk_backtest")
-                    if tqsdk_backtest is not None:
+                    # 处理 backtest replay
+                    if d.get("_tqsdk_backtest") or d.get("_tqsdk_replay"):
                         TqWebHelper.merge_diff(self._data, d)
                         web_diffs.append(d)
-                        if self._data["action"]["mode"] != "backtest":
-                            TqWebHelper.merge_diff(self._data, {"action": {"mode": "backtest"}})
-                            web_diffs.append({"action": {"mode": "backtest"}})
                     # 处理通知，行情和交易连接的状态
                     notify_diffs = self._notify_handler(d.get("notify", {}))
                     for diff in notify_diffs:
@@ -204,8 +218,17 @@ class TqWebHelper(object):
             chan.send_nowait(last_diff)
 
     def dt_func (self):
-        if '_tqsdk_backtest' in self._data:
+        # 回测和复盘模式，用 _api._account 一定是 TqSim, 使用 TqSim _get_current_timestamp() 提供的时间
+        # todo: 使用 TqSim.EPOCH
+        if self._data["action"]["mode"] == "backtest":
             return self._data['_tqsdk_backtest']['current_dt']
+        elif self._data["action"]["mode"] == "replay":
+            tqsim_current_timestamp = self._api._account._get_current_timestamp()
+            if tqsim_current_timestamp == 631123200000000000:
+                # 未收到任何行情, TqSim 时间没有更新
+                return tqsdk.TqApi._get_trading_day_start_time(self._data['_tqsdk_replay']['replay_dt'])
+            else:
+                return tqsim_current_timestamp
         else:
             return int(datetime.now().timestamp() * 1e9)
 
@@ -286,18 +309,24 @@ class TqWebHelper(object):
 
         ws_port = await self.web_port_chan.recv()
         # init http server handlers
-        ins_url = self._api._ins_url
-        md_url = self._api._md_url
-        ws_url = 'ws://127.0.0.1:' + str(ws_port['port'])
+        url_response = {
+            "ins_url": self._api._ins_url,
+            "md_url": self._api._md_url,
+            "ws_url": 'ws://127.0.0.1:' + str(ws_port['port'])
+        }
+        # TODO：在复盘模式下发送 replay_dt 给 web 端，服务器改完后可以去掉
+        if isinstance(self._api._backtest, tqsdk.api.TqReplay):
+            url_response["replay_dt"] = int(datetime.combine(self._api._backtest._replay_dt, datetime.min.time()).timestamp() * 1e9)
+
         app = web.Application()
         app.router.add_get(path='/url',
-                           handler=lambda request: TqWebHelper.httpserver_url_handler(ins_url, md_url, ws_url))
+                           handler=lambda request: TqWebHelper.httpserver_url_handler(url_response))
         app.router.add_get(path='/', handler=lambda request: TqWebHelper.httpserver_index_handler(self._web_dir))
         app.router.add_static('/', self._web_dir, show_index=True)
         runner = web.AppRunner(app)
         await runner.setup()
         server_socket = socket.socket()
-        server_socket.bind(('127.0.0.1', self._http_server_port))
+        server_socket.bind((self._http_server_host, self._http_server_port))
         address = server_socket.getsockname()
         site = web.SockSite(runner, server_socket)
         await site.start()
@@ -305,13 +334,61 @@ class TqWebHelper(object):
         await asyncio.sleep(100000000000)
 
     @staticmethod
-    def httpserver_url_handler(ins_url, md_url, ws_url):
-        return web.json_response({
-                'ins_url': ins_url,
-                'md_url': md_url,
-                'ws_url': ws_url
-            })
+    def httpserver_url_handler(response):
+        return web.json_response(response)
 
     @staticmethod
     def httpserver_index_handler(web_dir):
         return web.FileResponse(path=web_dir + '/index.html')
+
+    @staticmethod
+    def parser_arguments():
+        """解析命令行参数"""
+        parser = argparse.ArgumentParser()
+        # 天勤连接基本参数
+        parser.add_argument('--_action', type=str, required=False)
+        # action==run
+        parser.add_argument('--_broker_id', type=str, required=False)
+        parser.add_argument('--_account_id', type=str, required=False)
+        parser.add_argument('--_password', type=str, required=False)
+        # action==backtest
+        parser.add_argument('--_start_dt', type=str, required=False)
+        parser.add_argument('--_end_dt', type=str, required=False)
+        parser.add_argument('--_init_balance', type=str, required=False)
+        # action==replay
+        parser.add_argument('--_replay_dt', type=str, required=False)
+        # others
+        parser.add_argument('--_http_server_address', type=str, required=False)
+        args, unknown = parser.parse_known_args()
+        if args._action is None:
+            return None
+        else:
+            action = {}
+            action["_action"] = args._action
+            if action["_action"] == "run":
+                if not args._broker_id or not args._account_id or not args._password:
+                    raise Exception("run 必要参数缺失")
+                else:
+                    action["_broker_id"] = args._broker_id
+                    action["_account_id"] = args._account_id
+                    action["_password"] = args._password
+            elif action["_action"] == "backtest":
+                if not args._start_dt or not args._end_dt:
+                    raise Exception("backtest 必要参数缺失")
+                else:
+                    try:
+                        init_balance = 10000000.0 if args._init_balance is None else float(args._init_balance)
+                        action["_start_dt"] = args._start_dt
+                        action["_end_dt"] = args._end_dt
+                        action["_init_balance"] = init_balance
+                    except ValueError:
+                        raise Exception("backtest 参数错误, _init_balance = " + args._init_balance + " 不是数字")
+            elif action["_action"] == "replay":
+                if not args._replay_dt:
+                    raise Exception("replay 必要参数缺失")
+                else:
+                    action["_replay_dt"] = args._replay_dt
+            else:
+                raise Exception("不支持的类型 _action = %s, 请检查后重试。" % (action["_action"]))
+            action["_http_server_address"] = args._http_server_address
+            return action
